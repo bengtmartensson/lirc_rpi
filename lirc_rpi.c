@@ -9,6 +9,7 @@
  *
  * Copyright (C) 2012 Aron Robert Szabo <aron@reon.hu>,
  *		      Michael Bishop <cleverca22@gmail.com>
+ *		      Bengt Martensson <barf@bengt-martensson.de>
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
  *  the Free Software Foundation; either version 2 of the License, or
@@ -53,6 +54,8 @@
 #define MAX_UDELAY_US (MAX_UDELAY_MS*1000)
 #endif
 
+#define LIRC_RPI_MAX_TRANSMITTERS 8
+#define INVALID -1
 #define dprintk(fmt, args...)					\
 	do {							\
 		if (debug)					\
@@ -60,22 +63,31 @@
 			       fmt, ## args);			\
 	} while (0)
 
+/* Note: These defaults are pretty brutally overwritten by the devtree stuff. */
+#define DEFAULT_GPIO_IN_PIN 18
+#define DEFAULT_GPIO_OUT_PIN 17
+
 /* module parameters */
 
 /* set the default GPIO input pin */
-static int gpio_in_pin = 18;
+static int gpio_in_pin = DEFAULT_GPIO_IN_PIN;
 /* set the default pull behaviour for input pin */
 static int gpio_in_pull = BCM2708_PULL_DOWN;
-/* set the default GPIO output pin */
-static int gpio_out_pin = 17;
+static int gpio_out_pin[LIRC_RPI_MAX_TRANSMITTERS] =
+	{DEFAULT_GPIO_OUT_PIN, INVALID, INVALID, INVALID,
+	INVALID, INVALID, INVALID, INVALID};
+/* actual number of configured transmitters */
+static int n_transmitters = 1;
 /* enable debugging messages */
-static bool debug;
+static bool debug = 0;
 /* -1 = auto, 0 = active high, 1 = active low */
 static int sense = -1;
 /* use softcarrier by default */
 static bool softcarrier = 1;
 /* 0 = do not invert output, 1 = invert output */
 static bool invert = 0;
+/* Transmit mask */
+unsigned int tx_mask = 0xFFFFFFFF; /* All transmitters selected as default */
 
 struct gpio_chip *gpiochip;
 static int irq_num;
@@ -97,6 +109,10 @@ static unsigned long period;
 static unsigned long pulse_width;
 static unsigned long space_width;
 
+static bool inline transmitter_enabled(int n) {
+	return tx_mask & (1 << n);
+}
+
 static void safe_udelay(unsigned long usecs)
 {
 	while (usecs > MAX_UDELAY_US) {
@@ -116,17 +132,25 @@ static unsigned long read_current_us(void)
 static int init_timing_params(unsigned int new_duty_cycle,
 	unsigned int new_freq)
 {
-	if (1000 * 1000000L / new_freq * new_duty_cycle / 100 <=
-	    LIRC_TRANSMITTER_LATENCY)
-		return -EINVAL;
-	if (1000 * 1000000L / new_freq * (100 - new_duty_cycle) / 100 <=
-	    LIRC_TRANSMITTER_LATENCY)
-		return -EINVAL;
-	duty_cycle = new_duty_cycle;
-	freq = new_freq;
-	period = 1000 * 1000000L / freq;
-	pulse_width = period * duty_cycle / 100;
-	space_width = period - pulse_width;
+	if (new_freq > 0) {
+		if (1000 * 1000000L / new_freq * new_duty_cycle / 100 <=
+			LIRC_TRANSMITTER_LATENCY)
+			return -EINVAL;
+		if (1000 * 1000000L / new_freq * (100 - new_duty_cycle) / 100 <=
+			LIRC_TRANSMITTER_LATENCY)
+			return -EINVAL;
+		duty_cycle = new_duty_cycle;
+		freq = new_freq;
+		period = 1000 * 1000000L / freq;
+		pulse_width = period * duty_cycle / 100;
+		space_width = period - pulse_width;
+	} else {
+		duty_cycle = INVALID;
+		freq = 0;
+		period = INVALID;
+		pulse_width = INVALID;
+		space_width = INVALID;
+	}
 	dprintk("in init_timing_params, freq=%d pulse=%ld, "
 		"space=%ld\n", freq, pulse_width, space_width);
 	return 0;
@@ -135,6 +159,7 @@ static int init_timing_params(unsigned int new_duty_cycle,
 static long send_pulse_softcarrier(unsigned long length)
 {
 	int flag;
+	unsigned i;
 	unsigned long actual, target;
 	unsigned long actual_us, initial_us, target_us;
 
@@ -144,13 +169,11 @@ static long send_pulse_softcarrier(unsigned long length)
 	actual_us = read_current_us();
 
 	while (actual < length) {
-		if (flag) {
-			gpiochip->set(gpiochip, gpio_out_pin, invert);
-			target += space_width;
-		} else {
-			gpiochip->set(gpiochip, gpio_out_pin, !invert);
-			target += pulse_width;
-		}
+		for (i = 0; i < n_transmitters; i++)
+			if (transmitter_enabled(i))
+				gpiochip->set(gpiochip, gpio_out_pin[i], ! (flag ^ invert));
+		target += flag ? space_width : pulse_width;
+
 		initial_us = actual_us;
 		target_us = actual_us + (target - actual) / 1000;
 		/*
@@ -168,13 +191,18 @@ static long send_pulse_softcarrier(unsigned long length)
 
 static long send_pulse(unsigned long length)
 {
+	unsigned int i;
+
 	if (length <= 0)
 		return 0;
 
-	if (softcarrier) {
+	if (softcarrier && freq > 0) {
 		return send_pulse_softcarrier(length);
 	} else {
-		gpiochip->set(gpiochip, gpio_out_pin, !invert);
+		for (i = 0; i < n_transmitters; i++)
+			if (transmitter_enabled(i))
+				gpiochip->set(gpiochip, gpio_out_pin[i], !invert);
+
 		safe_udelay(length);
 		return 0;
 	}
@@ -182,7 +210,10 @@ static long send_pulse(unsigned long length)
 
 static void send_space(long length)
 {
-	gpiochip->set(gpiochip, gpio_out_pin, invert);
+	unsigned i;
+	for (i = 0; i < n_transmitters; i++)
+		if (transmitter_enabled(i))
+			gpiochip->set(gpiochip, gpio_out_pin[i], invert);
 	if (length <= 0)
 		return;
 	safe_udelay(length);
@@ -317,7 +348,7 @@ static void read_pin_settings(struct device_node *node)
 {
 	u32 pin;
 	int index;
-
+	int output_index = 0;
 	for (index = 0;
 	     of_property_read_u32_index(
 		     node,
@@ -334,11 +365,12 @@ static void read_pin_settings(struct device_node *node)
 			&function);
 		if (err == 0) {
 			if (function == 1) /* Output */
-				gpio_out_pin = pin;
+				gpio_out_pin[output_index++] = pin;
 			else if (function == 0) /* Input */
 				gpio_in_pin = pin;
 		}
 	}
+	n_transmitters = output_index;
 }
 
 static int init_port(void)
@@ -386,7 +418,8 @@ static int init_port(void)
 		return -EINVAL;
 	}
 
-	gpiochip->set(gpiochip, gpio_out_pin, invert);
+	for (i = 0; i < n_transmitters; i++)
+		gpiochip->set(gpiochip, gpio_out_pin[i], invert);
 
 	irq_num = gpiochip->to_irq(gpiochip, gpio_in_pin);
 	dprintk("to_irq %d\n", irq_num);
@@ -491,7 +524,8 @@ static ssize_t lirc_write(struct file *file, const char *buf,
 		else
 			delta = send_pulse(wbuf[i]);
 	}
-	gpiochip->set(gpiochip, gpio_out_pin, invert);
+	for (i = 0; i < n_transmitters; i++)
+		gpiochip->set(gpiochip, gpio_out_pin[i], invert);
 
 	spin_unlock_irqrestore(&lock, flags);
 	kfree(wbuf);
@@ -505,10 +539,12 @@ static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case LIRC_GET_SEND_MODE:
+		dprintk("LIRC_GET_SEND_MODE\n");
 		return -ENOIOCTLCMD;
 		break;
 
 	case LIRC_SET_SEND_MODE:
+		dprintk("LIRC_SET_SEND_MODE\n");
 		result = get_user(value, (__u32 *) arg);
 		if (result)
 			return result;
@@ -518,6 +554,7 @@ static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		break;
 
 	case LIRC_GET_LENGTH:
+		dprintk("LIRC_GET_LENGTH\n");
 		return -ENOSYS;
 		break;
 
@@ -536,12 +573,23 @@ static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		result = get_user(value, (__u32 *) arg);
 		if (result)
 			return result;
-		if (value > 500000 || value < 20000)
+		if (value > 500000 || value < 0)
 			return -EINVAL;
 		return init_timing_params(duty_cycle, value);
 		break;
 
+	case LIRC_SET_TRANSMITTER_MASK:
+		result = get_user(value, (__u32 *) arg);
+		dprintk("SET_TRANSMITTER_MASK %d\n", value);
+		if (result)
+			return result;
+		if ((value & ((1 << n_transmitters) - 1)) != value)
+			return n_transmitters;
+		tx_mask = value;
+		break;
+
 	default:
+		dprintk("COMMAND handed over to lirc_dev_fop_ioctl: %u\n", cmd);
 		return lirc_dev_fop_ioctl(filep, cmd, arg);
 	}
 	return 0;
@@ -650,6 +698,7 @@ static void lirc_rpi_exit(void)
 static int __init lirc_rpi_init_module(void)
 {
 	int result;
+	int i;
 
 	result = lirc_rpi_init();
 	if (result)
@@ -659,10 +708,17 @@ static int __init lirc_rpi_init_module(void)
 	if (result < 0)
 		goto exit_rpi;
 
-	driver.features = LIRC_CAN_SET_SEND_DUTY_CYCLE |
-			  LIRC_CAN_SET_SEND_CARRIER |
-			  LIRC_CAN_SEND_PULSE |
-			  LIRC_CAN_REC_MODE2;
+	driver.features = 0;
+	if (softcarrier) {
+		driver.features |= LIRC_CAN_SET_SEND_DUTY_CYCLE;
+		driver.features |= LIRC_CAN_SET_SEND_CARRIER;
+	}
+	if (n_transmitters > 0)
+		driver.features |= LIRC_CAN_SEND_PULSE;
+	if (n_transmitters > 1)
+		driver.features |= LIRC_CAN_SET_TRANSMITTER_MASK;
+	if (gpio_in_pin != INVALID)
+		driver.features |= LIRC_CAN_REC_MODE2;
 
 	driver.dev = &lirc_rpi_dev->dev;
 	driver.minor = lirc_register_driver(&driver);
@@ -676,6 +732,12 @@ static int __init lirc_rpi_init_module(void)
 
 	printk(KERN_INFO LIRC_DRIVER_NAME ": driver registered!\n");
 
+	dprintk("driver.features = %d\n", driver.features);
+	dprintk("softcarrier = %d\n", softcarrier);
+	dprintk("gpio_in_pin = %d\n", gpio_in_pin);
+	for (i = 0; i < n_transmitters; i++)
+		dprintk("gpio_out_pin[%d] = %d\n", i, gpio_out_pin[i]);
+
 	return 0;
 
 	exit_rpi:
@@ -686,9 +748,11 @@ static int __init lirc_rpi_init_module(void)
 
 static void __exit lirc_rpi_exit_module(void)
 {
+	int i;
 	lirc_unregister_driver(driver.minor);
 
-	gpio_free(gpio_out_pin);
+	for (i = 0; i < n_transmitters; i++)
+		gpio_free(gpio_out_pin[i]);
 	gpio_free(gpio_in_pin);
 
 	lirc_rpi_exit();
@@ -699,18 +763,22 @@ static void __exit lirc_rpi_exit_module(void)
 module_init(lirc_rpi_init_module);
 module_exit(lirc_rpi_exit_module);
 
+#define xstringify(s) stringify(s)
+#define stringify(s) #s
+
 MODULE_DESCRIPTION("Infra-red receiver and blaster driver for Raspberry Pi GPIO.");
 MODULE_AUTHOR("Aron Robert Szabo <aron@reon.hu>");
 MODULE_AUTHOR("Michael Bishop <cleverca22@gmail.com>");
+MODULE_AUTHOR("Bengt Martensson <barf@bengt-martensson.de>");
 MODULE_LICENSE("GPL");
 
-module_param(gpio_out_pin, int, S_IRUGO);
-MODULE_PARM_DESC(gpio_out_pin, "GPIO output/transmitter pin number of the BCM"
-		 " processor. (default 17");
+module_param_array(gpio_out_pin, int, &n_transmitters, S_IRUGO);
+MODULE_PARM_DESC(gpio_out_pin, "GPIO output/transmitter pins of the BCM"
+		 " processor. (default " xstringify(DEFAULT_GPIO_OUT_PIN) ")");
 
 module_param(gpio_in_pin, int, S_IRUGO);
 MODULE_PARM_DESC(gpio_in_pin, "GPIO input pin number of the BCM processor."
-		 " (default 18");
+		 " (default " xstringify(DEFAULT_GPIO_IN_PIN) ")");
 
 module_param(gpio_in_pull, int, S_IRUGO);
 MODULE_PARM_DESC(gpio_in_pull, "GPIO input pin pull configuration."
@@ -728,3 +796,6 @@ MODULE_PARM_DESC(invert, "Invert output (0 = off, 1 = on, default off");
 
 module_param(debug, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(debug, "Enable debugging messages");
+
+// tx_mask is deliberately not made available as module parameter;
+// it is a user parameter, not a hardware configuration parameter.

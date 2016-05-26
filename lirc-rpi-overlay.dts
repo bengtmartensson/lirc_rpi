@@ -28,7 +28,7 @@
 
 				// Enable debugging messages
 				// (0 = off, 1 = on)
-				rpi,debug = <0>;
+                                rpi,debug = <1>;
 			};
 		};
 	};
@@ -37,9 +37,9 @@
 		target = <&gpio>;
 		__overlay__ {
 			lirc_pins: lirc_pins {
-				brcm,pins = <17 18>;
-				brcm,function = <1 0>; // out in
-				brcm,pull = <0 1>; // off down
+                                brcm,pins = <23 24 25 12 16 26 18>;
+                                brcm,function = <1 1 1 1 1 1 0>; // out .. out in
+                                brcm,pull = <0 0 0 0 0 0 0>; // off .. off
 			};
 		};
 	};
