@@ -7,7 +7,7 @@
  *	      Lots of code has been taken from the lirc_serial module,
  *	      so I would like say thanks to the authors.
  *
- * Copyright (C) 2012,2016 Aron Robert Szabo <aron@reon.hu>,
+ * Copyright (C) 2012 Aron Robert Szabo <aron@reon.hu>,
  *		      Michael Bishop <cleverca22@gmail.com>
  *		      Bengt Martensson <barf@bengt-martensson.de>
  *  This program is free software; you can redistribute it and/or modify
@@ -610,12 +610,12 @@ static struct lirc_driver driver = {
 	.name		= LIRC_DRIVER_NAME,
 	.minor		= -1,
 	.code_length	= 1,
-	.sample_rate	= 0,
+//	.sample_rate	= 0,
 	.data		= NULL,
-	.add_to_buf	= NULL,
+//	.add_to_buf	= NULL,
 	.rbuf		= &rbuf,
-	.set_use_inc	= set_use_inc,
-	.set_use_dec	= set_use_dec,
+//	.set_use_inc	= set_use_inc,
+//	.set_use_dec	= set_use_dec,
 	.fops		= &lirc_fops,
 	.dev		= NULL,
 	.owner		= THIS_MODULE,
@@ -689,6 +689,8 @@ static int __init lirc_rpi_init(void)
 
 static void lirc_rpi_exit(void)
 {
+        // Previously called through driver.set_use_dec, which has been removed.
+        set_use_dec(NULL);
 	if (!lirc_rpi_dev->dev.of_node)
 		platform_device_unregister(lirc_rpi_dev);
 	platform_driver_unregister(&lirc_rpi_driver);
@@ -737,6 +739,9 @@ static int __init lirc_rpi_init_module(void)
 	dprintk("gpio_in_pin = %d\n", gpio_in_pin);
 	for (i = 0; i < n_transmitters; i++)
 		dprintk("gpio_out_pin[%d] = %d\n", i, gpio_out_pin[i]);
+
+	// Previously called through driver.set_use_inc, which has been removed.
+	set_use_inc(NULL);
 
 	return 0;
 
