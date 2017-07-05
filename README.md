@@ -26,5 +26,9 @@ Tested with Raspian May 2016 kernel 4.4.11-v7+. Changes:
 * Support for devicetree; the new file `lirc-rpi-overlay.dts`. (Note the hyphens; there is an
   underscore in `lirc_rpi`.) Note that the actually used pins (or a superset thereof)
   have to be defined in this file, which is subsequently compiled,
-  for example when building the kernel. 
+  for example when building the kernel.
 
+## Update 2017-07-05
+Verified that the current version compiles and runs on the current official Raspian (with 4.9 kernel).
+In the light of [issue 8](https://github.com/bengtmartensson/lirc_rpi/issues/8) create a version
+that runs with the new media distribution. This is checked in into the `media` branch.
