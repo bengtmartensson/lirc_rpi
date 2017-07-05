@@ -7,7 +7,7 @@
  *	      Lots of code has been taken from the lirc_serial module,
  *	      so I would like say thanks to the authors.
  *
- * Copyright (C) 2012 Aron Robert Szabo <aron@reon.hu>,
+ * Copyright (C) 2012,2016 Aron Robert Szabo <aron@reon.hu>,
  *		      Michael Bishop <cleverca22@gmail.com>
  *		      Bengt Martensson <barf@bengt-martensson.de>
  *  This program is free software; you can redistribute it and/or modify
